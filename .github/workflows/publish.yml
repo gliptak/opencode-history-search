@@ -30,7 +30,7 @@ jobs:
         run: bun install
 
       - name: Type check
-        run: bun run --bun tsc --noEmit
+        run: bun run typecheck
 
       - name: Test
         run: bun run test
@@ -42,6 +42,8 @@ jobs:
         run: npm publish
 
       - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF#refs/tags/}" \
             --title "${GITHUB_REF#refs/tags/}" \
