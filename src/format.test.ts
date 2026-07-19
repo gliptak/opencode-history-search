@@ -1,7 +1,8 @@
 import { test, expect, describe } from "bun:test";
-import { formatResults, formatTraceResults } from "./format";
+import { formatResults, formatTraceResults, formatMultitermResults } from "./format";
 import type { SearchMatch } from "./search/keyword";
 import type { FileTraceResult } from "./search/file-trace";
+import type { MultitermSearchMatch } from "./search/multiterm-sql";
 
 describe("formatResults", () => {
   test("renders a single match with project directory", () => {
@@ -125,5 +126,56 @@ describe("formatTraceResults", () => {
   test("returns empty message when no matches", () => {
     const output = formatTraceResults([]);
     expect(output).toBe("No file trace matches found in conversation history.");
+  });
+});
+
+describe("formatMultitermResults", () => {
+  const sampleResult = (overrides: Partial<MultitermSearchMatch> = {}): MultitermSearchMatch => ({
+    sessionID: "ses_001",
+    sessionTitle: "Train truck model",
+    timestamp: 1706745600000,
+    projectDirectory: "/project/a",
+    termHits: new Map(),
+    ...overrides,
+  });
+
+  test("formats multiterm results with one section per session", () => {
+    const results: MultitermSearchMatch[] = [
+      sampleResult({ sessionID: "ses_001", sessionTitle: "First" }),
+      sampleResult({ sessionID: "ses_002", sessionTitle: "Second" }),
+    ];
+
+    const output = formatMultitermResults(results);
+    expect(output).toContain("Found 2 sessions");
+    expect(output.match(/## /g)!.length).toBe(2);
+  });
+
+  test("lists matched terms under each session", () => {
+    const termHits = new Map();
+    termHits.set("truck", { partID: "p1", matchType: "text", excerpt: "we trained truck" });
+    termHits.set("vertex", { partID: "p2", matchType: "text", excerpt: "vertex ai" });
+    termHits.set("gemini", { partID: "p3", matchType: "text", excerpt: "gemini-2.5" });
+
+    const output = formatMultitermResults([
+      sampleResult({ termHits }),
+    ]);
+    expect(output).toContain("Matched terms: truck, vertex, gemini");
+  });
+
+  test("each session shows excerpt for each matched term", () => {
+    const termHits = new Map();
+    termHits.set("truck", { partID: "p1", matchType: "text", excerpt: "we trained truck" });
+    termHits.set("vertex", { partID: "p2", matchType: "text", excerpt: "vertex ai" });
+
+    const output = formatMultitermResults([
+      sampleResult({ termHits }),
+    ]);
+    expect(output).toContain("truck: we trained truck");
+    expect(output).toContain("vertex: vertex ai");
+  });
+
+  test("empty array returns no-match message", () => {
+    const output = formatMultitermResults([]);
+    expect(output).toContain("No sessions found");
   });
 });

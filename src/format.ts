@@ -1,5 +1,6 @@
 import type { SearchMatch } from "./search/keyword";
 import type { FileTraceResult } from "./search/file-trace";
+import type { MultitermSearchMatch } from "./search/multiterm-sql";
 
 export function formatResults(matches: SearchMatch[]): string {
   if (matches.length === 0) {
@@ -55,6 +56,38 @@ export function formatTraceResults(matches: FileTraceResult[]): string {
 
     if (match.userPrompt) {
       lines.push(`- Preceding User Prompt: "${match.userPrompt}"`);
+    }
+
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+export function formatMultitermResults(matches: MultitermSearchMatch[]): string {
+  if (matches.length === 0) {
+    return "No sessions found in conversation history.";
+  }
+
+  const lines: string[] = [
+    `Found ${matches.length} sessions in conversation history:\n`,
+  ];
+
+  for (const match of matches) {
+    const date = new Date(match.timestamp).toISOString().split("T")[0];
+    const time = new Date(match.timestamp).toTimeString().split(" ")[0];
+
+    lines.push(`## ${match.sessionTitle}`);
+    lines.push(`- Session ID: ${match.sessionID}`);
+    lines.push(`- Project: ${match.projectDirectory}`);
+    lines.push(`- Date: ${date} ${time}`);
+
+    if (match.termHits.size > 0) {
+      const termList = Array.from(match.termHits.keys()).join(", ");
+      lines.push(`- Matched terms: ${termList}`);
+      for (const [term, hit] of match.termHits) {
+        lines.push(`  - ${term}: ${hit.excerpt}`);
+      }
     }
 
     lines.push("");

@@ -1,10 +1,30 @@
 // @bun
+var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
+var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = import.meta.require;
 
-// src/index.ts
-import { tool } from "@opencode-ai/plugin";
-
 // src/storage-sqlite.ts
+var exports_storage_sqlite = {};
+__export(exports_storage_sqlite, {
+  listSessionsSqlite: () => listSessionsSqlite,
+  listPartsSqlite: () => listPartsSqlite,
+  listMessagesSqlite: () => listMessagesSqlite,
+  getDbPath: () => getDbPath,
+  dbExists: () => dbExists
+});
 import { Database } from "bun:sqlite";
 import path from "path";
 import os from "os";
@@ -98,6 +118,13 @@ async function* listPartsSqlite(messageID) {
     db.close();
   }
 }
+var init_storage_sqlite = () => {};
+
+// src/index.ts
+import { tool } from "@opencode-ai/plugin";
+
+// src/storage-provider.ts
+init_storage_sqlite();
 
 // src/storage.ts
 import path2 from "path";
@@ -241,7 +268,8 @@ async function searchKeyword(projectID, query, options = {}) {
         timestamp: session.time.updated,
         matchType: "title",
         excerpt: session.title,
-        context: session.title
+        context: session.title,
+        projectDirectory: session.directory
       });
       if (results.length >= limit)
         break;
@@ -1822,6 +1850,7 @@ function filterByDate(results, dateRange) {
 }
 
 // src/search/file-trace.ts
+init_storage_sqlite();
 function traceFileSqlite(db, projectID, queryPath, options) {
   const normalizedQuery = queryPath.replace(/\\/g, "/");
   const isExactPath = normalizedQuery.includes("/");
@@ -1965,6 +1994,112 @@ async function traceFile(projectID, filePath, options) {
   }
 }
 
+// src/search/multiterm-sql.ts
+function buildMultitermSql(terms, projectID, options) {
+  if (terms.length === 0) {
+    throw new Error("terms array must contain at least one term");
+  }
+  const conditions = terms.map((_, i) => `MAX(CASE WHEN p.data LIKE ? ESCAPE '\\' OR s.title LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END) AS match_${i}`).join(", ");
+  const having = terms.map((_, i) => `match_${i} = 1`).join(" AND ");
+  const projectFilter = projectID !== null ? "AND s.project_id = ?" : "";
+  const sql = `
+    SELECT s.id AS session_id, s.title, s.directory, s.time_updated, ${conditions}
+    FROM session s
+    JOIN part p ON p.session_id = s.id
+    WHERE 1=1
+      ${projectFilter}
+    GROUP BY s.id
+    HAVING ${having}
+    ORDER BY s.time_updated DESC
+    LIMIT ${options.limit}
+  `.trim();
+  const binds = [];
+  for (const term of terms) {
+    const escaped = term.replace(/[%_\\]/g, "\\$&");
+    binds.push(`%${escaped}%`);
+    binds.push(`%${escaped}%`);
+  }
+  if (projectID !== null) {
+    binds.push(projectID);
+  }
+  return { sql, binds };
+}
+function searchMultitermSqlite(db, projectID, terms, options) {
+  const { sql, binds } = buildMultitermSql(terms, projectID, {
+    limit: options?.limit ?? 50
+  });
+  const rows = db.query(sql).all(...binds);
+  if (rows.length === 0) {
+    return [];
+  }
+  const placeholder = rows.map(() => "?").join(",");
+  const sessionBinds = rows.map((r) => r.session_id);
+  const termConditions = [];
+  const termBinds = [];
+  for (const term of terms) {
+    const escaped = term.replace(/[%_\\]/g, "\\$&");
+    termConditions.push("(data LIKE ? ESCAPE '\\' OR session_id IN (" + placeholder + "))");
+    termBinds.push(`%${escaped}%`, ...sessionBinds);
+  }
+  const sqlFollow = `
+    SELECT session_id, id AS part_id, data
+    FROM part
+    WHERE ${termConditions.join(" AND ")}
+    ORDER BY time_created ASC
+  `;
+  const allFollowBinds = [];
+  for (let i = 0;i < terms.length; i++) {
+    allFollowBinds.push(termBinds[i * (1 + sessionBinds.length)]);
+    for (const sid of sessionBinds) {
+      allFollowBinds.push(sid);
+    }
+  }
+  const followRows = db.query(sqlFollow).all(...allFollowBinds);
+  const termHitsBySession = new Map;
+  for (const row of followRows) {
+    if (!termHitsBySession.has(row.session_id)) {
+      termHitsBySession.set(row.session_id, new Map);
+    }
+    const sessionMap = termHitsBySession.get(row.session_id);
+    if (sessionMap.size >= terms.length)
+      continue;
+    for (const term of terms) {
+      if (sessionMap.has(term))
+        continue;
+      const lower = row.data.toLowerCase();
+      const termLower = term.toLowerCase();
+      if (lower.includes(termLower)) {
+        const idx = lower.indexOf(termLower);
+        const start = Math.max(0, idx - 50);
+        const end = Math.min(row.data.length, idx + termLower.length + 50);
+        sessionMap.set(term, {
+          partID: row.part_id,
+          matchType: "data",
+          excerpt: row.data.slice(start, end)
+        });
+      }
+    }
+  }
+  return rows.map((row) => ({
+    sessionID: row.session_id,
+    sessionTitle: row.title,
+    timestamp: row.time_updated,
+    projectDirectory: row.directory,
+    termHits: termHitsBySession.get(row.session_id) ?? new Map
+  }));
+}
+async function searchMultiterm(projectID, terms, options) {
+  const { Database: Database2 } = await import("bun:sqlite");
+  const { getDbPath: getDbPath2 } = await Promise.resolve().then(() => (init_storage_sqlite(), exports_storage_sqlite));
+  const dbPath = getDbPath2();
+  const db = new Database2(dbPath, { readonly: true });
+  try {
+    return searchMultitermSqlite(db, projectID, terms, options);
+  } finally {
+    db.close();
+  }
+}
+
 // src/format.ts
 function formatResults(matches) {
   if (matches.length === 0) {
@@ -2018,14 +2153,49 @@ function formatTraceResults(matches) {
   return lines.join(`
 `);
 }
+function formatMultitermResults(matches) {
+  if (matches.length === 0) {
+    return "No sessions found in conversation history.";
+  }
+  const lines = [
+    `Found ${matches.length} sessions in conversation history:
+`
+  ];
+  for (const match of matches) {
+    const date = new Date(match.timestamp).toISOString().split("T")[0];
+    const time = new Date(match.timestamp).toTimeString().split(" ")[0];
+    lines.push(`## ${match.sessionTitle}`);
+    lines.push(`- Session ID: ${match.sessionID}`);
+    lines.push(`- Project: ${match.projectDirectory}`);
+    lines.push(`- Date: ${date} ${time}`);
+    if (match.termHits.size > 0) {
+      const termList = Array.from(match.termHits.keys()).join(", ");
+      lines.push(`- Matched terms: ${termList}`);
+      for (const [term, hit] of match.termHits) {
+        lines.push(`  - ${term}: ${hit.excerpt}`);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join(`
+`);
+}
 
 // src/index.ts
 var historySearch = tool({
-  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths. Supports keyword search, regex patterns, fuzzy search (for typos and variations), and date filtering.`,
+  description: `Search through past conversation histories. Use searchAllProjects=true to search ALL projects on this machine. Searches session titles, message content, tool invocations, and file paths.
+
+THREE SEARCH MODES:
+1. SINGLE-TERM (query): Pass query for one search term. Returns per-part matches. Use mode: "fuzzy" for typos, regex: true for patterns.
+2. MULTI-TERM AND (terms): Pass terms: ["term1", "term2", ...] to find sessions containing ALL terms anywhere in the session (across title, messages, tools, file paths). Returns one result per session with per-term excerpts. Use when the user remembers multiple concepts (e.g., "find sessions about truck, vertex, and gemini"). Requires 2+ terms. SQLite-only.
+3. FILE TRACE (filePath): Pass filePath to find which sessions created or modified a specific file.
+
+Supports keyword search, regex patterns, fuzzy search, multi-term AND search, date filtering, and role filtering.`,
   args: {
-    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath is provided."),
+    query: tool.schema.string().optional().describe("Search query (keyword, regex pattern, or fuzzy search term). Required unless filePath or terms is provided."),
+    terms: tool.schema.array(tool.schema.string()).optional().describe('Array of terms for multi-term AND search. Returns sessions containing ALL terms anywhere in the session (title, messages, tools, file paths). Use when the user wants sessions matching multiple concepts (e.g., ["truck", "vertex", "gemini"]). Requires 2+ terms for multi-term path; 1 term falls back to single-term query. SQLite-only. Case-insensitive substring matching.'),
     filePath: tool.schema.string().optional().describe("File path to trace touch history (e.g., 'src/auth.ts'). If provided, query, mode, regex, caseSensitive, fuzzyThreshold, and role are ignored."),
-    searchAllProjects: tool.schema.boolean().optional().describe("Set to true to search ALL projects on your machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."),
+    searchAllProjects: tool.schema.boolean().optional().describe("Set to true to search ALL projects on this machine across all repositories, not just the current one. Default: false (current repo only). Use when user asks to search globally, across all projects, machine-wide, or everywhere."),
     mode: tool.schema.enum(["keyword", "fuzzy"]).optional().describe("Search mode: 'keyword' for exact matches, 'fuzzy' for typo-tolerant matching (default: keyword)"),
     regex: tool.schema.boolean().optional().describe("Treat query as regex pattern (keyword mode only, default: false)"),
     caseSensitive: tool.schema.boolean().optional().describe("Case-sensitive search (keyword mode only, default: false)"),
@@ -2035,8 +2205,26 @@ var historySearch = tool({
     role: tool.schema.enum(["user", "assistant"]).optional().describe("Filter by message role: 'user' for your messages only, 'assistant' for AI responses only. Ignored if filePath is provided.")
   },
   async execute(args) {
-    if (!args.query && !args.filePath) {
-      throw new Error("Either 'query' or 'filePath' must be provided.");
+    if (!args.query && !args.filePath && !args.terms) {
+      throw new Error("Either 'query', 'terms', or 'filePath' must be provided.");
+    }
+    if (args.terms !== undefined) {
+      if (!Array.isArray(args.terms) || args.terms.length === 0) {
+        throw new Error("'terms' must be a non-empty array of strings.");
+      }
+      if (args.terms.length === 1) {
+        args.query = args.terms[0];
+      } else {
+        const projectID2 = args.searchAllProjects ? null : await getCurrentProjectID();
+        let matches2 = await searchMultiterm(projectID2, args.terms, {
+          limit: args.limit
+        });
+        if (args.date) {
+          const dateRange = parseDateFilter(args.date);
+          matches2 = filterByDate(matches2, dateRange);
+        }
+        return formatMultitermResults(matches2);
+      }
     }
     const projectID = args.searchAllProjects ? null : await getCurrentProjectID();
     if (args.filePath) {

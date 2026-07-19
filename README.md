@@ -14,13 +14,14 @@ Search through your OpenCode conversation history across ALL projects or within 
 - **Keyword Search** - Find exact matches in your conversation history
 - **Regex Search** - Use regular expressions for advanced pattern matching
 - **Fuzzy Search** - Typo-tolerant search that finds matches even with spelling errors
+- **Multi-Term AND Search** - Find sessions matching multiple concepts at once (e.g., `["truck", "vertex", "gemini"]`)
 - **Date Filtering** - Filter by "today", "last 7 days", "2024-01", date ranges, and more
 - **Role Filtering** - Search only your messages (`user`) or only AI responses (`assistant`)
 - **File Modification Tracking** - Find which sessions modified specific files
 - **Multiple Match Types** - Search across session titles, messages, tool invocations, and file paths
 - **Global Search** - Search across ALL projects on your machine with `searchAllProjects: true`
 - **Project-Aware Results** - See which project directory each result came from
-- **Fast** - Queries complete in < 50ms even with thousands of messages
+- **Fast** - Single-term queries ~500ms; multi-term session-level AND ~1s (on 100k+ parts)
 - **SQLite + JSON Support** - Works with OpenCode v1.2+ (SQLite) and v1.1.x (JSON files)
 
 ## Installation
@@ -113,6 +114,14 @@ Things you can ask OpenCode once this tool is installed:
 
 > "Search for 'databse connection'" _(fuzzy — finds "database connection")_
 
+### Find sessions matching multiple concepts at once
+
+> "Find sessions about training gemini with truck data" _(multi-term — matches all concepts across any part of the session)_
+
+> "Search for sessions that mention both 'authentication' and 'rate limiting'"
+
+> "Find conversations where we used vertex and gemini and discussed fine-tuning"
+
 ### Find sessions where a specific tool was used
 
 > "Find sessions where you ran grep on the codebase"
@@ -130,7 +139,9 @@ Things you can ask OpenCode once this tool is installed:
 | Parameter        | Type                      | Default     | Description                                            |
 | ---------------- | ------------------------- | ----------- | ------------------------------------------------------ |
 | `searchAllProjects` | boolean                   | `false`     | Search ALL projects on this machine (set to `true` for global search) |
-| `query`          | string                    | _required_  | Search query (keyword, regex, or fuzzy term)           |
+| `query`          | string                    | _required_  | Search query (keyword, regex, or fuzzy term). Required unless `filePath` or `terms` is provided. |
+| `terms`          | string[]                  | _none_      | Array of terms to search for with AND semantics — returns sessions that contain ALL terms across any part. For 2+ terms. SQLite-only. |
+| `filePath`       | string                    | _none_      | Trace touch history for a file path.                   |
 | `mode`           | `"keyword"` \| `"fuzzy"`  | `"keyword"` | Search mode                                            |
 | `regex`          | boolean                   | `false`     | Treat query as regex (keyword mode only)               |
 | `caseSensitive`  | boolean                   | `false`     | Enable case-sensitive search (keyword mode only)       |
@@ -171,6 +182,22 @@ Tolerates typos and variations using Levenshtein distance.
 { query: "ripgrap", mode: "fuzzy", fuzzyThreshold: 0.4 }
 // Finds: "ripgrep" (transposition)
 ```
+
+### Multi-Term AND Search
+
+Search for sessions that contain **all** of multiple concepts at once. Each term is matched as a substring across session titles and part content (text, tool inputs/outputs, file paths). Returns one result per session, with an excerpt for each matched term.
+
+```typescript
+{
+  terms: ["truck", "vertex", "gemini"],
+  searchAllProjects: true,
+  limit: 20
+}
+// Returns sessions whose parts collectively contain "truck" AND "vertex" AND "gemini"
+// (terms can be in different parts of the same session)
+```
+
+Multi-term search is **session-level**: a session matches if all terms appear anywhere in its content, even across different messages. This is useful when you remember multiple concepts from a session but not a single connecting phrase. SQLite-only (uses single-query conditional aggregation for performance).
 
 ## Date Filtering
 
@@ -213,6 +240,32 @@ Found 3 matches in conversation history:
 | `message`   | Text content of a user or assistant message               |
 | `tool`      | Tool name (grep, edit, bash, read, etc.)                  |
 | `filepath`  | File paths in tool inputs/outputs or patch parts          |
+
+### Multi-Term Output Format
+
+When using `terms` (multi-term AND search), output is session-grouped with per-term excerpts:
+
+```
+Found 3 sessions in conversation history:
+
+## Train truck model on Vertex
+- Session ID: ses_abc123...
+- Project: /home/user/projects/my-app
+- Date: 2026-07-15
+- Matched terms: truck, vertex, gemini
+  - truck: ...we trained truck model on data...
+  - vertex: ...please use vertex ai...
+  - gemini: ...tune gemini-2.5-flash...
+
+## Another session
+- Session ID: ses_def456...
+- Project: /home/user/projects/other
+- Date: 2026-07-10
+- Matched terms: truck, vertex, gemini
+  - truck: ...NonTruckExamples/x.ts...
+  - vertex: ...GOOGLE_VERTEX_LOCATION=global...
+  - gemini: ...gemini-service-account.json...
+```
 
 ## How It Works
 
@@ -259,13 +312,15 @@ bun run build
 ```
 src/
 ├── index.ts                  # Tool definition & main entry
-├── format.ts                 # Output formatting
+├── format.ts                 # Output formatting (single-term, multi-term, file-trace)
 ├── storage.ts                # JSON storage backend (v1.1.x)
 ├── storage-sqlite.ts         # SQLite storage backend (v1.2+)
 ├── storage-provider.ts       # Auto-detects backend, unified API
 └── search/
-    ├── keyword.ts            # Keyword & regex search
+    ├── keyword.ts            # Keyword & regex search (single-term, per-part)
+    ├── multiterm-sql.ts       # Multi-term AND search (session-level, SQL-based)
     ├── fuzzy.ts              # Fuzzy search
+    ├── file-trace.ts         # File touch history tracing
     └── date-filter.ts        # Date filtering
 ```
 
