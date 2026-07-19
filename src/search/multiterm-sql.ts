@@ -90,11 +90,14 @@ export function searchMultitermSqlite(
   const sessionBinds: string[] = rows.map((r) => r.session_id);
 
   const termConditions: string[] = [];
-  const termBinds: string[] = [];
+  const allFollowBinds: string[] = [];
   for (const term of terms) {
     const escaped = term.replace(/[%_\\]/g, "\\$&");
     termConditions.push("(data LIKE ? ESCAPE '\\' OR session_id IN (" + placeholder + "))");
-    termBinds.push(`%${escaped}%`, ...sessionBinds);
+    allFollowBinds.push(`%${escaped}%`);
+    for (const sid of sessionBinds) {
+      allFollowBinds.push(sid);
+    }
   }
 
   const sqlFollow = `
@@ -103,14 +106,6 @@ export function searchMultitermSqlite(
     WHERE ${termConditions.join(" AND ")}
     ORDER BY time_created ASC
   `;
-
-  const allFollowBinds = [];
-  for (let i = 0; i < terms.length; i++) {
-    allFollowBinds.push(termBinds[i * (1 + sessionBinds.length)]);
-    for (const sid of sessionBinds) {
-      allFollowBinds.push(sid);
-    }
-  }
 
   type FollowRow = { session_id: string; part_id: string; data: string };
   const followRows = db.query(sqlFollow).all(...allFollowBinds) as FollowRow[];

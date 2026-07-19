@@ -2035,11 +2035,14 @@ function searchMultitermSqlite(db, projectID, terms, options) {
   const placeholder = rows.map(() => "?").join(",");
   const sessionBinds = rows.map((r) => r.session_id);
   const termConditions = [];
-  const termBinds = [];
+  const allFollowBinds = [];
   for (const term of terms) {
     const escaped = term.replace(/[%_\\]/g, "\\$&");
     termConditions.push("(data LIKE ? ESCAPE '\\' OR session_id IN (" + placeholder + "))");
-    termBinds.push(`%${escaped}%`, ...sessionBinds);
+    allFollowBinds.push(`%${escaped}%`);
+    for (const sid of sessionBinds) {
+      allFollowBinds.push(sid);
+    }
   }
   const sqlFollow = `
     SELECT session_id, id AS part_id, data
@@ -2047,13 +2050,6 @@ function searchMultitermSqlite(db, projectID, terms, options) {
     WHERE ${termConditions.join(" AND ")}
     ORDER BY time_created ASC
   `;
-  const allFollowBinds = [];
-  for (let i = 0;i < terms.length; i++) {
-    allFollowBinds.push(termBinds[i * (1 + sessionBinds.length)]);
-    for (const sid of sessionBinds) {
-      allFollowBinds.push(sid);
-    }
-  }
   const followRows = db.query(sqlFollow).all(...allFollowBinds);
   const termHitsBySession = new Map;
   for (const row of followRows) {

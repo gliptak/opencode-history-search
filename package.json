@@ -1,7 +1,7 @@
 {
   "name": "opencode-history-search",
   "version": "1.5.0",
-  "description": "Search OpenCode conversation history across all projects or current repo — trace which prompts touched specific files",
+  "description": "Search OpenCode conversation history across all projects or current repo \u2014 trace which prompts touched specific files",
   "main": "dist/history-search.ts",
   "module": "dist/history-search.ts",
   "type": "module",
@@ -17,6 +17,7 @@
     "test:unit": "bun test src/storage.test.ts src/storage-sqlite.test.ts src/search/keyword.test.ts src/search/fuzzy.test.ts src/search/date-filter.test.ts src/search/file-trace.test.ts src/format.test.ts src/search/multiterm-sql.test.ts src/index.test.ts",
     "test:integration": "bun test src/**/*.integration.test.ts test/date-filter-integration.test.ts test/global-integration.test.ts",
     "test:all": "bun run test:unit && bun run test:integration",
+    "typecheck": "tsc --noEmit",
     "build": "bun run build.ts",
     "prepublishOnly": "bun run build"
   },
